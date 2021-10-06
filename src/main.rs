@@ -3,7 +3,7 @@
 #[macro_use]
 extern crate rocket;
 use rand::prelude::SliceRandom;
-use rocket::http::ContentType;
+use rocket::http::{ContentType};
 use rocket::Response;
 use std::fs;
 use std::io::{Cursor, Read};
@@ -30,7 +30,7 @@ lazy_static::lazy_static! {
     static ref IMAGES: RwLock<Vec<Image>> = RwLock::new(Vec::new());
 }
 
-#[get("/image")]
+#[get("/")]
 fn files<'a>() -> Response<'a> {
     let image = IMAGES
         .read()
@@ -68,5 +68,5 @@ fn main() {
     for entry in fs::read_dir("images").unwrap() {
         let _ = add_file(entry.unwrap().path());
     }
-    rocket::ignite().mount("/", routes![files]).launch();
+    rocket::ignite().mount("/image", routes![files]).launch();
 }
