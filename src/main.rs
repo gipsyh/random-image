@@ -1,14 +1,15 @@
 #![feature(proc_macro_hygiene, decl_macro)]
+
 #[macro_use]
 extern crate rocket;
-
-use std::io::{Cursor, Read};
-use std::sync::{Arc, RwLock};
-use std::{fs::File, vec};
-
 use rand::prelude::SliceRandom;
 use rocket::http::ContentType;
 use rocket::Response;
+use std::fs;
+use std::io::{Cursor, Read};
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::{fs::File, vec};
 
 #[derive(Clone)]
 struct ImageData(Arc<Vec<u8>>);
@@ -43,27 +44,29 @@ fn files<'a>() -> Response<'a> {
         .finalize()
 }
 
-fn init() {
-    let mut file = File::open("images/ttt.png").unwrap();
-    let mut file_buf = Vec::new();
-    file.read_to_end(&mut file_buf).unwrap();
-    IMAGES.write().unwrap().push(Image {
-        format: ContentType::JPEG,
-        data: ImageData(Arc::new(file_buf)),
-    });
+fn add_file(path: PathBuf) -> Result<(), ()> {
+    if !path.exists() {
+        return Err(());
+    }
+    if let Some(ext) = path.extension() {
+        if let Some(ext) = ContentType::from_extension(&ext.to_string_lossy()) {
+            if ext == ContentType::JPEG || ext == ContentType::PNG {
+                let mut file = File::open(path).unwrap();
+                let mut file_buf = Vec::new();
+                file.read_to_end(&mut file_buf).unwrap();
+                IMAGES.write().unwrap().push(Image {
+                    format: ext,
+                    data: ImageData(Arc::new(file_buf)),
+                });
+            }
+        }
+    }
+    Err(())
 }
 
 fn main() {
-    init();
-    rocket::ignite().mount("/", routes![files]).launch();
-}
-
-#[test]
-fn test() {
-    use std::fs;
     for entry in fs::read_dir("images").unwrap() {
-        let entry = entry.unwrap();
-        // let a =NamedFile::open("aaa").unwrap();
-        println!("{:?}", entry.metadata());
+        let _ = add_file(entry.unwrap().path());
     }
+    rocket::ignite().mount("/", routes![files]).launch();
 }
