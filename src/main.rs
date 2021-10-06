@@ -1,12 +1,8 @@
-extern crate rocket;
-extern crate rocket_contrib;
+#[macro_use] extern crate rocket;
 
-use rocket_contrib::serve::StaticFiles;
+use rocket::fs::{FileServer, relative};
 
-fn rocket() -> rocket::Rocket {
-    rocket::ignite().mount("/", StaticFiles::from("images"))
-}
-
-fn main() {
-    rocket().launch();
+#[launch]
+fn rocket() -> _ {
+    rocket::build().mount("/", FileServer::from(relative!("images")))
 }
