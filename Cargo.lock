@@ -723,6 +723,7 @@ name = "random-image"
 version = "0.1.0"
 dependencies = [
  "httpdate",
+ "rand",
  "rocket",
  "tokio",
 ]
