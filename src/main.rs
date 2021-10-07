@@ -1,72 +1,87 @@
-#![feature(proc_macro_hygiene, decl_macro)]
-
 #[macro_use]
 extern crate rocket;
-use rand::prelude::SliceRandom;
-use rocket::http::{ContentType};
-use rocket::Response;
-use std::fs;
-use std::io::{Cursor, Read};
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use std::{fs::File, vec};
+use httpdate::HttpDate;
+use rocket::http::hyper::header::{IF_MODIFIED_SINCE, LAST_MODIFIED};
+use rocket::http::{ContentType, Header, Status};
+use rocket::request::{self, FromRequest, Outcome};
+use rocket::response::Redirect;
+use rocket::response::Responder;
+use rocket::{uri, Request, Response};
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
-#[derive(Clone)]
-struct ImageData(Arc<Vec<u8>>);
+#[derive(Debug)]
+struct IfModifiedSince(Option<HttpDate>);
 
-#[derive(Clone)]
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for IfModifiedSince {
+    type Error = ();
+    async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
+        let date = match req.headers().get_one(IF_MODIFIED_SINCE.as_str()) {
+            Some(str) => HttpDate::from_str(str).ok(),
+            None => None,
+        };
+        Outcome::Success(IfModifiedSince(date))
+    }
+}
+
+#[derive(Debug)]
 struct Image {
-    format: ContentType,
-    data: ImageData,
+    file: File,
+    contenttype: ContentType,
+    ifmodifiedsince: IfModifiedSince,
 }
 
-impl AsRef<[u8]> for ImageData {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-lazy_static::lazy_static! {
-    static ref IMAGES: RwLock<Vec<Image>> = RwLock::new(Vec::new());
-}
-
-#[get("/")]
-fn files<'a>() -> Response<'a> {
-    let image = IMAGES
-        .read()
-        .unwrap()
-        .choose(&mut rand::thread_rng())
-        .unwrap()
-        .clone();
-    Response::build()
-        .header(image.format)
-        .sized_body(Cursor::new(image.data))
-        .finalize()
-}
-
-fn add_file(path: PathBuf) -> Result<(), ()> {
-    if !path.exists() {
-        return Err(());
-    }
-    if let Some(ext) = path.extension() {
-        if let Some(ext) = ContentType::from_extension(&ext.to_string_lossy()) {
-            if ext == ContentType::JPEG || ext == ContentType::PNG {
-                let mut file = File::open(path).unwrap();
-                let mut file_buf = Vec::new();
-                file.read_to_end(&mut file_buf).unwrap();
-                IMAGES.write().unwrap().push(Image {
-                    format: ext,
-                    data: ImageData(Arc::new(file_buf)),
-                });
-            }
+#[rocket::async_trait]
+impl<'r> Responder<'r, 'static> for Image {
+    fn respond_to(self, _request: &'r Request<'_>) -> rocket::response::Result<'static> {
+        let lastmodified: HttpDate = self.file.metadata().unwrap().modified().unwrap().into();
+        let lastmodifiedheader = Header::new(LAST_MODIFIED.to_string(), lastmodified.to_string());
+        match self.ifmodifiedsince.0 {
+            Some(ifmodifiedsince) if ifmodifiedsince >= lastmodified => Response::build()
+                .status(Status::new(304))
+                .header(lastmodifiedheader)
+                .ok(),
+            _ => Response::build()
+                .header(lastmodifiedheader)
+                .header(self.contenttype)
+                .sized_body(None, tokio::fs::File::from(self.file))
+                .ok(),
         }
     }
-    Err(())
 }
 
-fn main() {
-    for entry in fs::read_dir("images").unwrap() {
-        let _ = add_file(entry.unwrap().path());
+impl Image {
+    async fn new(path: PathBuf, ifmodifiedsince: IfModifiedSince) -> io::Result<Image> {
+        let file = File::open(&path)?;
+        let ext = path
+            .extension()
+            .and_then(OsStr::to_str)
+            .ok_or(io::ErrorKind::AddrInUse)?;
+        let contenttype = ContentType::from_extension(ext).unwrap();
+        Ok(Self {
+            file,
+            contenttype,
+            ifmodifiedsince,
+        })
     }
-    rocket::ignite().mount("/image", routes![files]).launch();
+}
+
+#[get("/image/<file>")]
+async fn image<'a>(file: &str, ifmodifiedsince: IfModifiedSince) -> Option<Image> {
+    let path = Path::new("images").join(file);
+    Image::new(path, ifmodifiedsince).await.ok()
+}
+
+#[get("/image")]
+fn random_image() -> Redirect {
+    Redirect::to(uri!(image("1.jpeg")))
+}
+
+#[rocket::launch]
+fn rocket() -> _ {
+    rocket::build().mount("/", routes![image, random_image])
 }
